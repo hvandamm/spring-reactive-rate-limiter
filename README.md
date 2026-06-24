@@ -1,1 +1,1 @@
-An API gateway simulation featuring custom Spring Security authentication filters and Redis-backed rate limiting to defend business logic from traffic surges.
+Distributed API Gatekeeper: Reactive Token Bucket Rate LimiterA high-performance, distributed API Gateway rate-limiting engine built with Spring Boot (Reactive Stack) and Redis. 

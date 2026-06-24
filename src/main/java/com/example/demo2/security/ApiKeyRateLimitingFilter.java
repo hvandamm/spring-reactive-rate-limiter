@@ -1,6 +1,9 @@
 package com.example.demo2.security;
 
+import com.example.demo2.config.RateLimiterProperties;
+import com.example.demo2.config.RateLimiterProperties.TierConfig;
 import com.example.demo2.service.TokenBucketRateLimiterService;
+import jakarta.annotation.PostConstruct;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -10,33 +13,42 @@ import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @Order(1)
 public class ApiKeyRateLimitingFilter implements WebFilter {
 
-    private static final String API_KEY_HEADER = "X-API-KEY";
-    private static final Map<String, ApiKeyTier> API_KEY_REGISTRY = new ConcurrentHashMap<>();
-
-    static {
-        // Hardcoded API keys with their respective tier configurations
-        API_KEY_REGISTRY.put("free-key-123", new ApiKeyTier("free", 10, 10.0 / 60.0));
-        API_KEY_REGISTRY.put("premium-key-456", new ApiKeyTier("premium", 100, 100.0 / 60.0));
-    }
+    static final String API_KEY_HEADER = "X-API-KEY";
 
     private final TokenBucketRateLimiterService rateLimiterService;
+    private final RateLimiterProperties rateLimiterProperties;
 
-    public ApiKeyRateLimitingFilter(TokenBucketRateLimiterService rateLimiterService) {
+    /**
+     * Map of API key → TierConfig, built dynamically from application.properties.
+     */
+    private final Map<String, TierConfig> apiKeyRegistry = new HashMap<>();
+
+    public ApiKeyRateLimitingFilter(TokenBucketRateLimiterService rateLimiterService,
+                                    RateLimiterProperties rateLimiterProperties) {
         this.rateLimiterService = rateLimiterService;
+        this.rateLimiterProperties = rateLimiterProperties;
+    }
+
+    @PostConstruct
+    void buildKeyRegistry() {
+        for (Map.Entry<String, TierConfig> entry : rateLimiterProperties.getTiers().entrySet()) {
+            TierConfig config = entry.getValue();
+            apiKeyRegistry.put(config.getKey(), config);
+        }
     }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String apiKey = exchange.getRequest().getHeaders().getFirst(API_KEY_HEADER);
 
-        if (apiKey == null || !API_KEY_REGISTRY.containsKey(apiKey)) {
+        if (apiKey == null || !apiKeyRegistry.containsKey(apiKey)) {
             exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
             exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
             byte[] body = "{\"error\": \"Missing or invalid X-API-KEY header\"}".getBytes();
@@ -44,13 +56,13 @@ public class ApiKeyRateLimitingFilter implements WebFilter {
                     .writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(body)));
         }
 
-        ApiKeyTier tier = API_KEY_REGISTRY.get(apiKey);
+        TierConfig tier = apiKeyRegistry.get(apiKey);
 
-        return rateLimiterService.tryConsume(apiKey, tier.capacity(), tier.refillRate())
+        return rateLimiterService.tryConsume(apiKey, tier.getCapacity(), tier.getRefillRate())
                 .flatMap(allowed -> {
                     if (allowed) {
                         exchange.getResponse().getHeaders()
-                                .add("X-RateLimit-Limit", String.valueOf(tier.capacity()));
+                                .add("X-RateLimit-Limit", String.valueOf(tier.getCapacity()));
                         return chain.filter(exchange);
                     }
 
@@ -63,6 +75,4 @@ public class ApiKeyRateLimitingFilter implements WebFilter {
                             .writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(body)));
                 });
     }
-
-    private record ApiKeyTier(String name, long capacity, double refillRate) {}
 }
